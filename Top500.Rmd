@@ -1,0 +1,118 @@
+---
+title: "Top 500 Rolling Stones Albums Analysis"
+author: "Elvira N"
+date: '9 мая 2017 г '
+output: 
+  html_document:
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(pander)
+knitr::opts_chunk$set(echo = FALSE, warning = F, message = F)
+panderOptions("table.style", 'multiline')
+options(scipen = 0, digits = 2)
+```
+
+## Введение
+
+В данном исследовании мы проанализируем список альбомов из Топ-500 по версии Rolling Stones[^1]. Файл с данными можно скачать с ресурса [Datazar](https://www.datazar.com/file/fab8ac573-12b3-4b30-9f1d-2bd5ff62b1e8).
+
+[^1]: Подробнее со списком можно ознакомиться на [официальном сайте](http://www.rollingstone.com/music/lists/500-greatest-albums-of-all-time-20120531).
+
+В первую очередь, взглянем на имеющиеся данные. В датасете есть колонки: Number (Позиция в списке от 1 до 500), Year (год издания альбома), Album (Название альбома). Мы добавили колонку Epoch к исходному датасету, которая соотносит годы издания альбома к музыкальным эпохам (50-е, 60-е и т.д.).
+
+```{r data import}
+df <- 
+  read.csv('Rolling_Stones_Top_500_Albums.csv') %>%
+  select(Number, Year, Album) %>% 
+  mutate(Epoch = paste0(substr(Year, 1, 3), "0s"))
+head(df) %>% knitr::kable(caption = "Head of the Dataset")
+```
+
+
+Теперь обратимся к статистике в разрезе эпох:
+```{r}
+df2 <- df %>% 
+  group_by(Epoch) %>% 
+  summarise(N=n(), Mean=mean(Number), Median=median(Number), SD=sd(Number))
+
+df2 %>% knitr::kable(caption = "Descriptive statistics for Epochs")
+  
+```
+
+На основе данной таблицы можем сделать несколько предварительных выводов и замечаний:
+
+1. Наименьшее количество альбомов относится к эпохе `r as.vector(df2[df2$N==min(df2$N),1])` (`r min(df2$N)`). 
+
+2. Минимальное медианное значение рейтинга относится к `r as.vector(df2[df2$Median==min(df2$Median),1])` (`r min(df2$Median)`), максимальное -- `r as.vector(df2[df2$Median==max(df2$Median),1])` (`r max(df2$Median)`).
+
+3. Также наблюдаем, что с ростом значения Epoch увеличиваются и средние, и медианные значения рейтинга, т.е. более старые альбомы в среднем в рейтинге выше, чем новые.
+
+##1 Гипотеза
+
+Исходя из последнего вывода мы предлагаем *следующую гипотезу* -- существуют статистически значимые различия в рейтингах альбомов в зависимости от эпохи, в которой они были выпущены (средние значения рейтинга каждой эпохи в ГС не равны). Для проверки данной гипотезы воспользуемся однофакторным дисперсионным анализом ANOVA.
+
+##2 Анализ
+
+### 2.1 Графический анализ
+Прежде всего построим графики ящиков с усами и violin plots для каждой эпохи.
+
+```{r graph 1, fig.height=4}
+ggplot(df, aes(Epoch, Number))+
+  geom_violin(fill="#6666FF")+
+  geom_boxplot(width=0.35, fill="#CCCCFF")+
+  xlab("Музыкальная эпоха")+
+  ylab("Место в рейтинге")+
+  ggtitle('Violin and Box plots by Epochs')+
+  theme_economist()+
+  theme(text = element_text(face="bold", size=10),
+        axis.text = element_text(size=8),
+        plot.title = element_text(hjust = 0.5))
+```
+
+Можно заметить, что форма violin plot схожа у графиков 1950s и 1960s, у 1970s распределение более равномерное и симметричное, далее оно начинает сужаться в нижней части и к 2000s большинство оценок сосредоточено в верхней части графика, ровно как и медиана. Также бросается в глаза очень маленькое количество наблюдений в 2010s.
+
+### 2.2 Однофакторный дисперсионный анализ
+Был проведен анализ ANOVA с поправкой Тьюки, чтобы избежать ошибки множественных сравнений, и далее выведены только те пары наблюдений, для которых `p adj` меньше 0.05 (статистически значимые различия).
+
+```{r ANOVA1}
+fit <- aov(Number ~ Epoch, df)
+tuk <- as.data.frame(TukeyHSD(fit)[[1]])
+tuk[tuk$`p adj`<0.05,] %>% knitr::kable(caption = "Tukey's HSD for ANOVA")
+```
+
+### 2.3 Группировка переменых и повторное проведение анализа
+Видим, что 4 пары из 6 содержат в себе 1960s, две -- 1970s. Исходя из полученных рассчетов, мы решили объединить эпохи в группы в переменной Epoch2 в соответствии со схожестью распределения оценок внутри них. Первая группа -- **1950-1960s**, вторая -- **1970s**, третья -- **1980s-2010s**. Результаты ANOVA представлены ниже:
+
+```{r ANOVA2}
+df <- df %>% mutate(Epoch2 = ifelse(Epoch %in% c("1950s", "1960s"), "1950-1960s",
+                                    ifelse(Epoch=="1970s", "1970s", "1980s-2010s")))
+
+fit2 <- aov(Number ~ Epoch2, df)
+summary(fit2)
+
+```
+
+Полученные результаты, позволяют отвергнуть нулевую гипотезу о том, что средние значения рейтинга для полученных групп эпох равны. Проиллюстрируем это с помощью графика:
+
+```{r graph2, fig.height=3}
+ggplot(df, aes(Epoch2, Number))+
+  geom_violin(fill="#6666FF")+
+  geom_boxplot(width=0.35, fill="#CCCCFF")+
+  xlab("Музыкальная эпоха")+
+  ylab("Место в рейтинге")+
+  ggtitle('Violin and Box plots by Epochs Groups')+
+  theme_economist()+
+  theme(text = element_text(face="bold", size=10),
+        axis.text = element_text(size=8),
+        plot.title = element_text(hjust = 0.5))
+```
+
+##Вывод
+
+Существуют статистически значимые различия в рейтингах альбомов в разрезе групп эпох. Альбомы более ранних годов получают более высокую оценку в рейтинге.
